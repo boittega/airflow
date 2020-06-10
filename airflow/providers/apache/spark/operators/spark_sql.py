@@ -67,7 +67,7 @@ class SparkSqlOperator(BaseOperator):
                  executor_memory=None,
                  keytab=None,
                  principal=None,
-                 master='yarn',
+                 master=None,
                  name='default-name',
                  num_executors=None,
                  verbose=True,

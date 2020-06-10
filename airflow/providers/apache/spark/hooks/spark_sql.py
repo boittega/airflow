@@ -16,6 +16,7 @@
 # specific language governing permissions and limitations
 # under the License.
 #
+import os
 import subprocess
 
 from airflow.exceptions import AirflowException
@@ -56,25 +57,26 @@ class SparkSqlHook(BaseHook):
     """
 
     # pylint: disable=too-many-arguments
-    def __init__(self,
-                 sql,
-                 conf=None,
-                 conn_id='spark_sql_default',
-                 total_executor_cores=None,
-                 executor_cores=None,
-                 executor_memory=None,
-                 keytab=None,
-                 principal=None,
-                 master='yarn',
-                 name='default-name',
-                 num_executors=None,
-                 verbose=True,
-                 yarn_queue='default'
-                 ):
+    def __init__(
+        self,
+        sql,
+        conf=None,
+        conn_id="spark_sql_default",
+        total_executor_cores=None,
+        executor_cores=None,
+        executor_memory=None,
+        keytab=None,
+        principal=None,
+        master=None,
+        name="default-name",
+        num_executors=None,
+        verbose=True,
+        yarn_queue="default",
+    ):
         super().__init__()
         self._sql = sql
         self._conf = conf
-        self._conn = self.get_connection(conn_id)
+        self._conn_id = conn_id
         self._total_executor_cores = total_executor_cores
         self._executor_cores = executor_cores
         self._executor_memory = executor_memory
@@ -87,8 +89,47 @@ class SparkSqlHook(BaseHook):
         self._yarn_queue = yarn_queue
         self._sp = None
 
+        self._connection = self._resolve_connection()
+
     def get_conn(self):
         pass
+
+    def _resolve_connection(self):
+        conn = self.get_connection(self._conn_id)
+        extra = conn.extra_dejson
+        if self._master:
+            master = self._master
+        elif conn.host:
+            master = (
+                "{}:{}".format(conn.host, conn.port) if conn.port else conn.host
+            )
+        else:
+            master = None
+        conn_data = {
+            "spark_home": extra.get("spark-home", None),
+            "spark_sql_binary": extra.get("spark-sql-binary", "spark-sql"),
+            "master": master,
+        }
+        return conn_data
+
+    def _get_spark_binary_path(self):
+        """
+        If the spark_home is passed then build the spark-sql executable path
+        using the spark_home; otherwise assume that spark-sql is present in
+        the path to the executing user
+        """
+        if self._connection["spark_home"]:
+            connection_cmd = [
+                os.path.join(
+                    self._connection["spark_home"],
+                    "bin",
+                    self._connection["spark_sql_binary"],
+                )
+            ]
+        else:
+            connection_cmd = [self._connection["spark_sql_binary"]]
+
+        return connection_cmd
 
     def _prepare_command(self, cmd):
         """
@@ -99,12 +140,15 @@ class SparkSqlHook(BaseHook):
         :type cmd: str or list[str]
         :return: full command to be executed
         """
-        connection_cmd = ["spark-sql"]
+        connection_cmd = self._get_spark_binary_path()
         if self._conf:
             for conf_el in self._conf.split(","):
                 connection_cmd += ["--conf", conf_el]
         if self._total_executor_cores:
-            connection_cmd += ["--total-executor-cores", str(self._total_executor_cores)]
+            connection_cmd += [
+                "--total-executor-cores",
+                str(self._total_executor_cores),
+            ]
         if self._executor_cores:
             connection_cmd += ["--executor-cores", str(self._executor_cores)]
         if self._executor_memory:
@@ -121,8 +165,8 @@ class SparkSqlHook(BaseHook):
                 connection_cmd += ["-f", sql]
             else:
                 connection_cmd += ["-e", sql]
-        if self._master:
-            connection_cmd += ["--master", self._master]
+        if self._connection["master"]:
+            connection_cmd += ["--master", self._connection["master"]]
         if self._name:
             connection_cmd += ["--name", self._name]
         if self._verbose:
@@ -151,10 +195,12 @@ class SparkSqlHook(BaseHook):
         :type kwargs: dict
         """
         spark_sql_cmd = self._prepare_command(cmd)
-        self._sp = subprocess.Popen(spark_sql_cmd,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT,
-                                    **kwargs)
+        self._sp = subprocess.Popen(
+            spark_sql_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            **kwargs
+        )
 
         for line in iter(self._sp.stdout):
             self.log.info(line)
